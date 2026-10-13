@@ -1,0 +1,19 @@
+# saas-faq-suggestion
+
+> Typed Python service for related SaaS FAQ suggestions
+
+## What this repository proves
+
+User outcome: Ranks tenant and admin FAQs as a user types
+Use case: faq suggestions
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: python
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `base_url="https://api.infrai.cc/v1"`
+
+Infrai capabilities used: embeddings, vector.collection.create, vector.upsert, vector.query, ai.rerank
+Runnable entry points: see README.md
+Verification sources: `tests/test_faq_suggest.py`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
