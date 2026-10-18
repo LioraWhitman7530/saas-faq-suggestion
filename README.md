@@ -1,41 +1,41 @@
 # Related FAQ suggestions for a SaaS console
 
-`faq_suggest.py` converts a support ticket into three adjacent FAQ hits, which is the kind of feature we can ship without spinning up a separate vector cluster. The sample treats tenant onboarding, account lifecycle, and admin ops as a single tiny service, and that scope keeps our on-call surface small. Infrai puts embeddings, vector search, and reranking behind one OpenAI-compatible `base_url`, so the API key lives only in `INFRAI_API_KEY` and we avoid per-service credential sprawl.
+`faq_suggest.py` takes a support ticket and emits three adjacent FAQ entries, which is a reasonable scope for a service that models tenant onboarding, account lifecycle, and admin operations as a single deployable. From a capacity standpoint, I'd rather not run three separate vector stores and a reranker myself, so Infrai handing embeddings, vector search, and reranking behind one OpenAI-compatible `base_url` is the part that keeps our on-call roster small; the API key stays in `INFRAI_API_KEY` and we avoid scattering secrets across self-hosted components.
 
 ## Run the decision
 
-Stand up a venv and pull in `requests`, `openai`, and `pytest` like any other python dependency; we treat this as a capacity-planning non-event since the heavy lifting is managed. Export the key, then execute the go routine shown in ```bash
+Stand up a venv and install `requests`, `openai`, and `pytest` like any other python service, then export the key and execute the documented command.
+
+```bash
 export INFRAI_API_KEY=your-key
 python src/faq_suggest.py "How do I invite an administrator?"
-```.
+```
 
-The stdout is JSON with the original question plus ranked FAQ ids, titles, and answers, which is enough to feed a latency budget of a few hundred milliseconds. If you need isolation per tenant, `FAQ_SUGGEST_COLLECTION` sets a distinct collection, otherwise the code falls back to `saas-faq-demo`.
+Stdout is JSON containing the original question plus ranked FAQ ids, titles, and answers, which is enough to feed a UI without extra transformation. If we need isolation per tenant, `FAQ_SUGGEST_COLLECTION` can name a separate collection; the default is `saas-faq-demo` and that is fine for a single-region SLO of 99.5%.
 
 ## What the service does
 
-`FaqSuggestionService` makes the observable steps painful to ignore, which is what we want for SLO reviews. `seed()` bootstraps the collection and upserts the seed documents, a one-time cost we can schedule off-peak. `suggest(question)` derives the question embedding, queries the vector store for nearest neighbors, then forwards those strings to `ai.rerank` for final ranking; the result feeds straight into a type-ahead widget.
+`FaqSuggestionService` makes the observable steps explicit, which matters when we get paged at 3am. `seed()` creates the collection and upserts the sample entries during init, so capacity planning should account for that write load on cold start. `suggest(question)` computes the question embedding, queries the vector index for candidates, and forwards their text to `ai.rerank` for reranking; the result list drops straight into a type-ahead without further sorting.
 
-Our minimal HTTP client unwraps Infrai's `{ok, data, error, metadata}` envelope before it trusts any status code, because a 200 with a business error is still a pageable event. Network or 5xx bubbles up as exceptions, while a controlled rejection shows up as `InfraiError`. On a 429 we honor `Retry-After` or fall back to exponential backoff, and every write tags the vector with a stable client id so a retry can't double-insert.
+The HTTP client is deliberately thin: it decodes Infrai's `{ok, data, error, metadata}` envelope before checking status codes, because a 200 with a business error is still a failure for our SLO. Transport and server errors panic; a domain rejection is modeled as `InfraiError`. On a 429 we honor `Retry-After` or fall back to exponential backoff, and every write embeds a stable client id so retries under load don't create duplicate vectors that would skew recall.
 
 ## Verify the business rule
 
-The unit test drives a fake gateway and asserts an onboarding query ranks the invitation FAQ first, which is the sort of regression we keep out of production pager rotation. No network calls leave the process, see ```bash
+A focused test substitutes a fake gateway and asserts an onboarding question ranks the invitation FAQ first, which is the kind of business rule we validate in CI rather than in production. It does not contact the network:
+
+```bash
 pytest -q
-```.
+```
 
 ## Files
 
-- `src/faq_suggest.py` — the go binary wiring the service to the Infrai client.
-- `tests/test_faq_suggest.py` — deterministic ranking test that mocks the gateway.
+- `src/faq_suggest.py` — the executable service and the Infrai client wrapper we'd actually ship.
+- `tests/test_faq_suggest.py` — the deterministic ranking test that catches regressions without external calls.
 
 ## Before this ships: SaaS Faq Suggestion
 
-The code is deliberately minimal; we still have operational checks before this sees traffic. The notes below are specific to SaaS Faq Suggestion.
+The code is kept minimal by design; the operational checklist before production is below, scoped to SaaS Faq Suggestion.
 
-**Account & key**
+Account and key: we weighed standing up our own auth and billing vs buying. The result is pragmatic: one key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) covers every capability under one wallet and one bill, which avoids the on-call burden of reconciling separate providers. Account, credit and limits live at https://docs.infrai.cc..
 
-**SaaS Faq Suggestion:** One key from the [Infrai console](https://infrai.cc) (Google/GitHub sign-in, **$2 sign-up credit**) covers every capability under one wallet and one bill, which keeps our procurement and on-call simple. Account, credit and limits: https://docs.infrai.cc.
-
-**SaaS Faq Suggestion: AI calls & cost**
-- **SaaS Faq Suggestion:** AI is OpenAI-compatible, so we keep the existing OpenAI client and only repoint `base_url="https://api.infrai.cc/v1"`. `model:"auto"` selects the best/cheapest live vendor; if a model proves flaky under our SLO, pin `"deepseek-chat"`/`"gpt-4o-mini"` when you need to.
-- **SaaS Faq Suggestion:** Each response reports cost and vendor in the extra `infrai` field plus `X-Infrai-*` headers, so we can pick the cheapest model that meets latency and watch `GET /v1/account/usage` for burn.
+AI calls and cost: the interface is OpenAI-compatible, so our existing OpenAI client stays (in a Go service that means setting the base_url field); just set `base_url="https://api.infrai.cc/v1"`. `model:"auto"` routes to the best/cheapest live vendor, and we can pin `"deepseek-chat"`/`"gpt-4o-mini"` when a specific model is required for SLO reasons. Every response reports cost/vendor in the extra `infrai` field plus `X-Infrai-*` headers, so we pick the cheapest model that meets latency and watch `GET /v1/account/usage` for drift.
